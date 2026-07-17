@@ -54,6 +54,13 @@ def parse(sql: str) -> dict:
         return _parse_delete(sql)
     elif command == "UPDATE":
         return _parse_update(sql)
+    elif command == "EXPLAIN":
+        # EXPLAIN wraps a SELECT — parse the inner SELECT and tag it
+        inner_sql = sql[len("EXPLAIN"):].strip()
+        result = _parse_select(inner_sql)
+        if result["type"] == "SELECT":
+            result["explain"] = True
+        return result
     else:
         return {"type": "ERROR", "message": f"Unknown command: {command}"}
 
@@ -95,8 +102,9 @@ def _parse_insert(sql: str) -> dict:
 
 
 def _parse_select(sql: str) -> dict:
-    """Parse: SELECT * FROM students WHERE grade > 80 ORDER BY name"""
-    result = {"type": "SELECT", "columns": [], "table": "", "where": None, "order_by": None}
+    """Parse: SELECT * FROM students [JOIN orders ON students.id = orders.uid] [WHERE grade > 80] [ORDER BY name]"""
+    result = {"type": "SELECT", "columns": [], "table": "", "where": None,
+              "order_by": None, "join": None, "explain": False}
 
     # Remove ORDER BY first
     order_match = re.search(r"\s+ORDER\s+BY\s+(\w+)", sql, re.IGNORECASE)
@@ -118,6 +126,21 @@ def _parse_select(sql: str) -> dict:
             pass
         result["where"] = {"column": col, "op": op, "value": val}
         sql = sql[: where_match.start()]
+
+    # Check for JOIN ... ON ...
+    join_match = re.search(
+        r"\s+JOIN\s+(\w+)\s+ON\s+(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)",
+        sql, re.IGNORECASE
+    )
+    if join_match:
+        result["join"] = {
+            "table": join_match.group(1),
+            "left_table": join_match.group(2),
+            "left_col": join_match.group(3),
+            "right_table": join_match.group(4),
+            "right_col": join_match.group(5),
+        }
+        sql = sql[: join_match.start()]
 
     # Parse SELECT ... FROM ...
     select_from = re.match(

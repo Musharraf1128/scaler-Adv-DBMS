@@ -171,21 +171,41 @@ class MiniDB:
         return f"Inserted: {data} → RID {rid}"
 
     def _execute_select(self, cmd: dict) -> str:
-        """SELECT with Volcano model pipeline."""
+        """SELECT with Volcano model pipeline, EXPLAIN, and JOIN support."""
         table_name = cmd["table"]
         if table_name not in self.tables:
             return f"ERROR: Table '{table_name}' does not exist"
 
         table = self.tables[table_name]
         where = cmd.get("where")
+        join_info = cmd.get("join")
 
-        # Decide: use INDEX SCAN or SEQ SCAN?
+        # --- Cost-based access path decision ---
         use_index = False
         if where and where["column"] == table["columns"][0] and where["op"] == "=":
             use_index = True
 
+        # --- EXPLAIN: show the query plan without executing ---
+        if cmd.get("explain"):
+            plan_lines = ["Query Plan:"]
+            plan_lines.append(f"  └─ Projection: {cmd['columns']}")
+            if where:
+                plan_lines.append(f"     └─ Filter: {where['column']} {where['op']} {where['value']}")
+            if join_info:
+                plan_lines.append(f"     └─ HashJoin: {join_info['left_table']}.{join_info['left_col']} = {join_info['right_table']}.{join_info['right_col']}")
+                plan_lines.append(f"        ├─ SeqScan: {table_name}")
+                plan_lines.append(f"        └─ SeqScan: {join_info['table']}")
+            elif use_index:
+                plan_lines.append(f"     └─ IndexSeek: B+Tree on {table['columns'][0]} = {where['value']} (cost: ~3 page reads)")
+            else:
+                num_pages = table["heap"].num_pages
+                plan_lines.append(f"     └─ SeqScan: {table_name} (cost: {num_pages} page reads)")
+            if cmd.get("order_by"):
+                plan_lines.append(f"  └─ Sort: {cmd['order_by']}")
+            return "\n".join(plan_lines)
+
+        # --- Access path: Index Seek vs Sequential Scan ---
         if use_index:
-            # INDEX SCAN — O(log n) using B+ tree
             rid = table["index"].search(where["value"])
             if rid is None:
                 records = []
@@ -194,8 +214,39 @@ class MiniDB:
                 rec = page.get(rid[1])
                 records = [(rid, rec)] if rec else []
         else:
-            # SEQ SCAN — O(n) read all records
             records = table["heap"].scan_all()
+
+        # --- JOIN execution using Hash Join ---
+        if join_info:
+            join_table_name = join_info["table"]
+            if join_table_name not in self.tables:
+                return f"ERROR: Table '{join_table_name}' does not exist"
+
+            join_table = self.tables[join_table_name]
+            join_records = join_table["heap"].scan_all()
+
+            # Determine join columns
+            left_col = join_info["left_col"]
+            right_col = join_info["right_col"]
+
+            # Hash Join: build hash table on smaller side, probe with larger
+            # BUILD phase: hash the left (outer) records
+            hash_table = {}
+            for rid, rec in records:
+                key = rec.data.get(left_col)
+                if key is not None:
+                    hash_table.setdefault(key, []).append(rec)
+
+            # PROBE phase: scan right (inner) records and look up
+            joined = []
+            for rid, rec in join_records:
+                key = rec.data.get(right_col)
+                if key in hash_table:
+                    for left_rec in hash_table[key]:
+                        merged = {**left_rec.data, **rec.data}
+                        joined.append((None, Record(merged)))
+
+            records = joined
 
         # Build Volcano pipeline
         pipeline = SeqScanOperator(records)

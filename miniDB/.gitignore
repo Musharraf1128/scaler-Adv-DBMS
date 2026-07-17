@@ -2,3 +2,5 @@
 data/
 __pycache__/
 *.pyc
+tests/test_data/
+STUDY_GUIDE.txt

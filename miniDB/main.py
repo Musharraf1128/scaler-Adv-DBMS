@@ -170,6 +170,10 @@ def main():
         if not sql:
             continue
 
+        # Skip SQL comments
+        if sql.startswith("--"):
+            continue
+
         # Special commands
         if sql.lower() in (".quit", ".exit", "quit", "exit"):
             print("Bye!")
