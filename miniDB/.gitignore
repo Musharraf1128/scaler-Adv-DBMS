@@ -1,0 +1,4 @@
+# Runtime data files (generated when running miniDB)
+data/
+__pycache__/
+*.pyc
